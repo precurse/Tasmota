@@ -1,5 +1,5 @@
 /*
-  xsns_109_sgp4x.ino - SGP4X VOC and NOx sensor support for Tasmota
+  xsns_109_sgp4x.ino - SGP4X Universal VOC and NOx sensor support for Tasmota
 
   Copyright (C) 2023  Andrew Klaus
 
@@ -20,7 +20,7 @@
 #ifdef USE_I2C
 #ifdef USE_SGP4X
 /*********************************************************************************************\
- * SGP4x - Gas (TVOC - Total Volatile Organic Compounds) and NOx
+ * SGP4x - Gas (TVOC - Total Volatile Organic Compounds) and NOx (SGP41-only)
  *
  * Source: Sensirion Driver, with mods by Andrew Klaus
  * Adaption for TASMOTA: Andrew Klaus
@@ -39,6 +39,11 @@ extern "C" {
 #include "sensirion_gas_index_algorithm.h"
 };
 
+enum SGP4X_Type {
+  TYPE_SGP41,
+  TYPE_SGP40,
+};
+
 enum SGP4X_State {
   STATE_SGP4X_START,
   STATE_SGP4X_SELFTEST_SENT,
@@ -49,8 +54,10 @@ enum SGP4X_State {
   STATE_SGP4X_NORMAL,
   STATE_SGP4X_FAIL,
 };
+
 SensirionI2CSgp4x sgp4x;
 SGP4X_State sgp4x_state = STATE_SGP4X_START;
+SGP4X_Type  sgp4x_type = TYPE_SGP41;
 
 bool sgp4x_init = false;
 bool sgp4x_read_pend = false;
@@ -133,6 +140,12 @@ void Sgp4xSendReadCmd(void)
     }
   }
 
+  // SGP40 device detection happens here
+  // Sensirion provides no way to detect if device is an SGP40 or SGP41
+  // The workaround is to first send sendConditioningCmd()
+  // SGP40 doesn't support this, which results in a NACK
+  // If a self-test is already successful, we can reliably assume this is an SGP40
+
   // Initiate conditioning
   if (sgp4x_state == STATE_SGP4X_SELFTEST_DONE) {
     error = sgp4x.sendConditioningCmd(0x8000, 0x6666);
@@ -140,7 +153,26 @@ void Sgp4xSendReadCmd(void)
 
     if (error) {
       Sgp4xHandleError(error);
+
+      // If we received a write error NACK, we can assume this is an SGP40
+      uint16_t highLevelError = error & 0xFF00;
+      uint16_t lowLevelError = error & 0x00FF;
+
+      if (highLevelError == HighLevelError::WriteError and lowLevelError == LowLevelError::I2cDataNack) {
+        sgp4x_type = TYPE_SGP40;
+        AddLog(LOG_LEVEL_INFO, PSTR("SGP4X detected SGP40 device type"));
+
+        // SGP40 doesn't do conditioning, so skip
+        sgp4x_state = STATE_SGP4X_NORMAL;
+      } else {
+        // Unexpected error after sending conditioning command
+        sgp4x_state = STATE_SGP4X_FAIL;
+      }
+    } else {
+        sgp4x_type = TYPE_SGP41;
+        AddLog(LOG_LEVEL_INFO, PSTR("SGP4X detected SGP41 device type"));
     }
+
     return;
   }
 
@@ -150,7 +182,12 @@ void Sgp4xSendReadCmd(void)
 
   // Normal operation
   if (sgp4x_state == STATE_SGP4X_NORMAL) {
-    error = sgp4x.sendRawSignalsCmd(rhticks, tempticks);
+    if (sgp4x_type == TYPE_SGP41) {
+      error = sgp4x.sendRawSignalsCmd(rhticks, tempticks);
+    } else {
+      error = sgp4x.sendRawSignalCmd(rhticks, tempticks);
+    }
+
     if (error) {
       Sgp4xHandleError(error);
     } else {
@@ -182,7 +219,7 @@ void Sgp4xUpdate(void)
 {
   uint16_t error;
 
-  // Conditioning - NOx needs 10s to warmup
+  // Conditioning - SGP41 NOx needs 10s to warmup
   if (sgp4x_state == STATE_SGP4X_COND_SENT) {
     if (conditioning_s > 0) {
       conditioning_s--;
@@ -193,12 +230,20 @@ void Sgp4xUpdate(void)
   }
 
   if (sgp4x_state == STATE_SGP4X_NORMAL && sgp4x_read_pend) {
-    error = sgp4x.readRawSignalsValue(srawVoc, srawNox);
+    if (sgp4x_type == TYPE_SGP41) {
+      error = sgp4x.readRawSignalsValue(srawVoc, srawNox);
+    } else {
+      error = sgp4x.readRawSignalValue(srawVoc);
+    }
     sgp4x_read_pend = false;
 
     if (!error) {
       GasIndexAlgorithm_process(&voc_algorithm_params, srawVoc, &voc_index_sgp4x);
-      GasIndexAlgorithm_process(&nox_algorithm_params, srawNox, &nox_index_sgp4x);
+
+      // SGP41 supports NOx
+      if (sgp4x_type == TYPE_SGP41) {
+        GasIndexAlgorithm_process(&nox_algorithm_params, srawNox, &nox_index_sgp4x);
+      }
     } else {
       Sgp4xHandleError(error);
     }
@@ -206,25 +251,38 @@ void Sgp4xUpdate(void)
 }
 
 #ifdef USE_WEBSERVER
-const char HTTP_SNS_SGP4X[] PROGMEM =
-  "{s}SGP4X TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
-  "{s}SGP4X NOX " D_JSON_RAW "{m}%d " "{e}"
-  "{s}SGP4X " D_TVOC "{m}%d " "{e}"
-  "{s}SGP4X " D_NOX "{m}%d " "{e}";
+const char HTTP_SNS_SGP4X_SGP41[] PROGMEM =
+  "{s}SGP41 TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
+  "{s}SGP41 NOX " D_JSON_RAW "{m}%d " "{e}"
+  "{s}SGP41 " D_TVOC "{m}%d " "{e}"
+  "{s}SGP41 " D_NOX "{m}%d " "{e}";
+
+const char HTTP_SNS_SGP4X_SGP40[] PROGMEM =
+  "{s}SGP40 TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
+  "{s}SGP40 " D_TVOC "{m}%d " "{e}";
 #endif
 
 void Sgp4xShow(bool json)
 {
   if (sgp4x_state == STATE_SGP4X_NORMAL) {
     if (json) {
-      ResponseAppend_P(PSTR(",\"SGP4X\":{\"VOC_" D_JSON_RAW "\":%d,\"NOX_" D_JSON_RAW "\":%d,\"" D_TVOC "\":%d,\"" D_NOX "\":%d"), srawVoc, srawNox, voc_index_sgp4x, nox_index_sgp4x);
+      if (sgp4x_type == TYPE_SGP41) {
+        ResponseAppend_P(PSTR(",\"SGP40\":{\"VOC_" D_JSON_RAW "\":%d,\"NOX_" D_JSON_RAW "\":%d,\"" D_TVOC "\":%d,\"" D_NOX "\":%d"), srawVoc, srawNox, voc_index_sgp4x, nox_index_sgp4x);
+      } else {
+        ResponseAppend_P(PSTR(",\"SGP41\":{\"VOC_" D_JSON_RAW "\":%d,,\"" D_TVOC "\":%d,"), srawVoc, voc_index_sgp4x);
+      }
       ResponseJsonEnd();
 #ifdef USE_DOMOTICZ
       if (0 == TasmotaGlobal.tele_period) DomoticzSensor(DZ_AIRQUALITY, srawVoc);
 #endif  // USE_DOMOTICZ
 #ifdef USE_WEBSERVER
     } else {
-      WSContentSend_PD(HTTP_SNS_SGP4X, srawVoc, srawNox, voc_index_sgp4x, nox_index_sgp4x);
+      if (sgp4x_type == TYPE_SGP41) {
+        WSContentSend_PD(HTTP_SNS_SGP4X_SGP41, srawVoc, srawNox, voc_index_sgp4x, nox_index_sgp4x);
+      } else {
+        WSContentSend_PD(HTTP_SNS_SGP4X_SGP40, srawVoc, voc_index_sgp4x);
+      }
+
 #endif
     }
   }
