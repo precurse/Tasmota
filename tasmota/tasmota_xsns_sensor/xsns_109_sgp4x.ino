@@ -57,7 +57,7 @@ enum SGP4X_State {
 
 SensirionI2CSgp4x sgp4x;
 SGP4X_State sgp4x_state = STATE_SGP4X_START;
-SGP4X_Type  sgp4x_type = TYPE_SGP41;
+SGP4X_Type  sgp4x_type = TYPE_SGP41;          // Default to SGP41, unless we detect SGP40
 
 bool sgp4x_init = false;
 bool sgp4x_read_pend = false;
@@ -252,14 +252,14 @@ void Sgp4xUpdate(void)
 
 #ifdef USE_WEBSERVER
 const char HTTP_SNS_SGP4X_SGP41[] PROGMEM =
-  "{s}SGP41 TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
-  "{s}SGP41 NOX " D_JSON_RAW "{m}%d " "{e}"
-  "{s}SGP41 " D_TVOC "{m}%d " "{e}"
-  "{s}SGP41 " D_NOX "{m}%d " "{e}";
+  "{s}SGP4X TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
+  "{s}SGP4X NOX " D_JSON_RAW "{m}%d " "{e}"
+  "{s}SGP4X " D_TVOC "{m}%d " "{e}"
+  "{s}SGP4X " D_NOX "{m}%d " "{e}";
 
 const char HTTP_SNS_SGP4X_SGP40[] PROGMEM =
-  "{s}SGP40 TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
-  "{s}SGP40 " D_TVOC "{m}%d " "{e}";
+  "{s}SGP4X TVOC " D_JSON_RAW "{m}%d " "{e}"                // {s} = <tr><th>, {m} = </th><td>, {e} = </td></tr>
+  "{s}SGP4X " D_TVOC "{m}%d " "{e}";
 #endif
 
 void Sgp4xShow(bool json)
@@ -267,9 +267,9 @@ void Sgp4xShow(bool json)
   if (sgp4x_state == STATE_SGP4X_NORMAL) {
     if (json) {
       if (sgp4x_type == TYPE_SGP41) {
-        ResponseAppend_P(PSTR(",\"SGP40\":{\"VOC_" D_JSON_RAW "\":%d,\"NOX_" D_JSON_RAW "\":%d,\"" D_TVOC "\":%d,\"" D_NOX "\":%d"), srawVoc, srawNox, voc_index_sgp4x, nox_index_sgp4x);
+        ResponseAppend_P(PSTR(",\"SGP4X\":{\"TVOC_" D_JSON_RAW "\":%d,\"NOX_" D_JSON_RAW "\":%d,\"" D_TVOC "\":%d,\"" D_NOX "\":%d"), srawVoc, srawNox, voc_index_sgp4x, nox_index_sgp4x);
       } else {
-        ResponseAppend_P(PSTR(",\"SGP41\":{\"VOC_" D_JSON_RAW "\":%d,,\"" D_TVOC "\":%d,"), srawVoc, voc_index_sgp4x);
+        ResponseAppend_P(PSTR(",\"SGP4X\":{\"TVOC_" D_JSON_RAW "\":%d,,\"" D_TVOC "\":%d,"), srawVoc, voc_index_sgp4x);
       }
       ResponseJsonEnd();
 #ifdef USE_DOMOTICZ
